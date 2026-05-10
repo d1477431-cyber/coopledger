@@ -1,10 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
-  collection, onSnapshot, query, orderBy,
-  doc, updateDoc, increment, getDoc, setDoc
+  collection, onSnapshot,
+  doc, updateDoc, increment, getDoc, setDoc, writeBatch
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Link } from 'react-router-dom';
+import {
+  useTransactions,
+  useOpenVotes,
+  useBlockchainWrite,
+  rememberVoteCast,
+} from '../hooks/useBlockchain';
+import { useWallet, getAddress } from '../hooks/useWallet';
+import { getExplorerTxUrl, CONTRACT_ADDRESS, isContractConfigured } from '../config/blockchain';
 
 // ── Formatage ──
 function formatFCFA(n) {
@@ -57,8 +65,6 @@ const PRIORITE = {
 
 // ── Barre de progression ──
 function ProgressBar({ oui, non, total, quorum }) {
-  const pctOui = total > 0 ? Math.round((oui / total) * 100) : 0;
-  const pctNon = total > 0 ? Math.round((non / total) * 100) : 0;
   const participation = oui + non;
   const pctParticipation = total > 0 ? Math.round((participation / total) * 100) : 0;
 
@@ -91,17 +97,10 @@ function ProgressBar({ oui, non, total, quorum }) {
 }
 
 // ── Carte de vote principal ──
-function VoteCard({ vote, userData, onVote, monVote }) {
+function VoteCard({ vote, userData, onVote, monVote, voteProofHash, votePending }) {
   const prio = PRIORITE[vote.priorite] || PRIORITE.routine;
   const participation = vote.votesOui + vote.votesNon;
-  const pctParticipation = vote.totalMembres > 0
-    ? Math.round((participation / vote.totalMembres) * 100) : 0;
   const aVote = !!monVote;
-
-  // Temps restant
-  const msRestants = vote.dateExpiration - new Date();
-  const heuresRestantes = Math.max(0, Math.floor(msRestants / 3600000));
-  const minutesRestantes = Math.max(0, Math.floor((msRestants % 3600000) / 60000));
 
   return (
     <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -129,9 +128,18 @@ function VoteCard({ vote, userData, onVote, monVote }) {
 
         {/* Description */}
         <div className="bg-gray-50 rounded-xl p-4 mb-4">
-          <p className="text-sm font-semibold text-gray-700 mb-2">Valider cette dépense ?</p>
+          <p className="text-sm font-semibold text-gray-700 mb-2">
+            {vote.typeVote === 'role_change' ? 'Valider ce changement de rôle ?' : 'Valider cette dépense ?'}
+          </p>
           <p className="text-sm text-gray-600 leading-relaxed">{vote.description}</p>
         </div>
+
+        {vote.typeVote === 'role_change' && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            Changement de rôle proposé : <strong>{vote.targetUserName || 'Membre'}</strong> ·{' '}
+            <strong>{vote.oldRole || 'membre'}</strong> → <strong>{vote.newRole || 'membre'}</strong>
+          </div>
+        )}
 
         {/* Détails */}
         <div className="grid grid-cols-2 gap-3 text-sm">
@@ -232,21 +240,40 @@ function VoteCard({ vote, userData, onVote, monVote }) {
               Vous avez voté {monVote === 'oui' ? 'OUI' : 'NON'}
             </p>
             <p className="text-sm text-green-600 mt-1">
-              Votre vote est enregistré sur la blockchain · {genHash()}
+              Votre vote est enregistré sur la blockchain
+              {voteProofHash?.startsWith?.('0x') ? (
+                <>
+                  {' · '}
+                  <a
+                    href={getExplorerTxUrl(voteProofHash) || '#'}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono underline"
+                  >
+                    {voteProofHash.slice(0, 10)}…{voteProofHash.slice(-4)}
+                  </a>
+                </>
+              ) : (
+                <> · {genHash()}</>
+              )}
             </p>
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4">
             <button
+              type="button"
+              disabled={votePending}
               onClick={() => onVote(vote.id, 'non')}
-              className="flex items-center justify-center gap-3 bg-gray-100 hover:bg-red-600 text-gray-700 hover:text-white border-2 border-gray-200 hover:border-red-600 py-4 rounded-2xl font-bold text-lg transition-all duration-200 group"
+              className="flex items-center justify-center gap-3 bg-gray-100 hover:bg-red-600 text-gray-700 hover:text-white border-2 border-gray-200 hover:border-red-600 py-4 rounded-2xl font-bold text-lg transition-all duration-200 group disabled:opacity-50"
             >
               <span className="text-xl group-hover:scale-110 transition-transform">❌</span>
               NON
             </button>
             <button
+              type="button"
+              disabled={votePending}
               onClick={() => onVote(vote.id, 'oui')}
-              className="flex items-center justify-center gap-3 bg-green-700 hover:bg-green-800 text-white py-4 rounded-2xl font-bold text-lg transition-all duration-200 shadow-lg hover:shadow-green-200 group"
+              className="flex items-center justify-center gap-3 bg-green-700 hover:bg-green-800 text-white py-4 rounded-2xl font-bold text-lg transition-all duration-200 shadow-lg hover:shadow-green-200 group disabled:opacity-50"
             >
               <span className="text-xl group-hover:scale-110 transition-transform">✅</span>
               OUI
@@ -268,21 +295,70 @@ function VoteCard({ vote, userData, onVote, monVote }) {
 // ════════════════════════════════════════
 
 export default function Vote({ userData }) {
-  const [votes, setVotes] = useState([]);
+  const { transactions, loading: txLoading, cachedNotice } = useTransactions({
+    firebaseFallback: true,
+  });
+  const { votes: votesOuvertsChain } = useOpenVotes(transactions);
+  const { vote: submitVoteOnChain, pending: chainVotePending } =
+    useBlockchainWrite();
+  const { ensureWallet } = useWallet();
+
+  const [votesFb, setVotesFb] = useState([]);
   const [mesVotes, setMesVotes] = useState({});
-  const [loading, setLoading] = useState(true);
   const [voteEnCours, setVoteEnCours] = useState(null);
   const [notification, setNotification] = useState(null);
   const [selectedVote, setSelectedVote] = useState(null);
-  const [useDemo, setUseDemo] = useState(false);
+  const [useDemo] = useState(false);
   const [historiqueVotes, setHistoriqueVotes] = useState([]);
+  const [voteProofById, setVoteProofById] = useState({});
+
+  const votes = useMemo(() => {
+    if (votesOuvertsChain.length > 0) return votesOuvertsChain;
+    const now = new Date();
+    return votesFb.filter((v) => {
+      if (v.statut !== 'ouvert') return false;
+      const expiration = v.dateExpiration?.toDate
+        ? v.dateExpiration.toDate()
+        : new Date(v.dateExpiration);
+      return expiration > now;
+    });
+  }, [votesOuvertsChain, votesFb]);
+
+  const loading = txLoading;
+
+  const finalizeRoleChangeVote = async (voteId, voteData) => {
+    const voteRef = doc(db, 'votes', voteId);
+    const snapshot = voteData ? null : await getDoc(voteRef);
+    const vote = voteData || (snapshot?.exists() ? { id: voteId, ...snapshot.data() } : null);
+    if (!vote) return false;
+    if (vote.typeVote !== 'role_change') return false;
+    if (vote.statut !== 'ouvert' || vote.applique) return false;
+
+    const totalMembres = vote.totalMembres || 0;
+    const majoriteRequise = vote.majoriteRequise || Math.floor(totalMembres / 2) + 1;
+    const votesOui = vote.votesOui || 0;
+
+    if (votesOui < majoriteRequise) return false;
+    if (!vote.targetUserId || !vote.newRole) return false;
+
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'users', vote.targetUserId), { role: vote.newRole });
+    batch.update(voteRef, {
+      statut: 'approuve',
+      applique: true,
+      appliqueLe: new Date(),
+      resultat: 'majorite_simple',
+    });
+    await batch.commit();
+    return true;
+  };
 
   // Charger l'historique des votes terminés depuis Firebase
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'votes'), (snap) => {
       const termines = snap.docs
         .map(d => ({ id: d.id, ...d.data() }))
-        .filter(v => v.statut === 'approuve' || v.statut === 'rejete' || v.statut === 'annule')
+        .filter(v => v.statut === 'approuve' || v.statut === 'rejete' || v.statut === 'annule' || v.statut === 'expire')
         .sort((a, b) => {
           const da = a.dateCreation?.toDate?.() || new Date(a.dateCreation || 0);
           const db2 = b.dateCreation?.toDate?.() || new Date(b.dateCreation || 0);
@@ -294,11 +370,10 @@ export default function Vote({ userData }) {
     return () => unsub();
   }, []);
 
-  // Charger les votes depuis Firebase
+  // Charger les votes Firebase (secours + expiration)
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'votes'), async (snap) => {
       const now = new Date();
-      const data = [];
 
       for (const docSnap of snap.docs) {
         const vote = { id: docSnap.id, ...docSnap.data() };
@@ -309,60 +384,79 @@ export default function Vote({ userData }) {
           ? vote.dateExpiration.toDate()
           : new Date(vote.dateExpiration);
 
-        // Vote expiré → on vérifie si majorité atteinte
         if (expiration <= now) {
+          if (vote.typeVote === 'role_change') {
+            const applied = await finalizeRoleChangeVote(vote.id, vote);
+            if (!applied) {
+              try {
+                await updateDoc(doc(db, 'votes', vote.id), {
+                  statut: 'expire',
+                  resultat: 'majorite_non_atteinte',
+                });
+              } catch (err) {
+                console.error('Erreur clôture vote role_change expiré:', err);
+              }
+            }
+            continue;
+          }
+
           const participation = (vote.votesOui || 0) + (vote.votesNon || 0);
-          const pctParticipation = vote.totalMembres > 0
-            ? (participation / vote.totalMembres) * 100 : 0;
+          const pctParticipation =
+            vote.totalMembres > 0 ? (participation / vote.totalMembres) * 100 : 0;
 
-          const nouveauStatut = pctParticipation >= vote.quorumRequis
-            ? (vote.votesOui > vote.votesNon ? 'approuve' : 'rejete')
-            : 'annule'; // ← Pas de majorité = annulé automatiquement
+          const nouveauStatut =
+            pctParticipation >= vote.quorumRequis
+              ? vote.votesOui > vote.votesNon
+                ? 'approuve'
+                : 'rejete'
+              : 'annule';
 
-          // Mettre à jour Firebase
           try {
             await updateDoc(doc(db, 'votes', vote.id), { statut: nouveauStatut });
-            // Mettre à jour la transaction liée
             if (vote.transactionId) {
               await updateDoc(doc(db, 'transactions', vote.transactionId), {
-                statut: nouveauStatut === 'approuve' ? 'valide' : 'rejete'
+                statut: nouveauStatut === 'approuve' ? 'valide' : 'rejete',
               });
             }
           } catch (err) {
             console.error('Erreur mise à jour vote expiré:', err);
           }
-          continue;
         }
-
-        data.push(vote);
       }
 
-      setVotes(data);
-      setLoading(false);
-    }, (err) => {
-      console.error(err);
-      setLoading(false);
+      setVotesFb(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     });
     return () => unsub();
   }, []);
   // Charger les votes de l'utilisateur
   useEffect(() => {
     if (!userData?.uid) return;
-    const unsub = onSnapshot(
-      collection(db, 'bulletins_vote'),
-      (snap) => {
-        const myVotes = {};
-        snap.docs.forEach(d => {
-          const data = d.data();
-          if (data.userId === userData.uid) {
-            myVotes[data.voteId] = data.choix;
-          }
-        });
-        setMesVotes(myVotes);
-      }
-    );
+    const unsub = onSnapshot(collection(db, 'bulletins_vote'), (snap) => {
+      const myVotesFb = {};
+      snap.docs.forEach((d) => {
+        const data = d.data();
+        if (data.userId === userData.uid) myVotesFb[data.voteId] = data.choix;
+      });
+      setMesVotes((prev) => ({ ...myVotesFb, ...prev }));
+    });
     return () => unsub();
   }, [userData]);
+
+  useEffect(() => {
+    const addr = getAddress();
+    if (!addr) return;
+    setMesVotes((prev) => {
+      const next = { ...prev };
+      votesOuvertsChain.forEach((v) => {
+        if (!v.chainTransactionId) return;
+        const raw = localStorage.getItem(
+          `coopledger_vote_${v.chainTransactionId}_${addr}`
+        );
+        if (raw === 'oui' || raw === 'non') next[v.id] = raw;
+      });
+      return next;
+    });
+  }, [votesOuvertsChain]);
 
   // Vote d'un membre
   async function handleVote(voteId, choix) {
@@ -370,18 +464,42 @@ export default function Vote({ userData }) {
     if (voteEnCours) return;
     setVoteEnCours(voteId);
 
+    const voteObj =
+      votes.find((v) => v.id === voteId) ||
+      votesOuvertsChain.find((v) => v.id === voteId);
+
     try {
+      if (voteObj?.chainTransactionId) {
+        ensureWallet();
+        const addr = getAddress();
+        if (!addr) throw new Error('Wallet requis pour voter sur la chaîne.');
+        const res = await submitVoteOnChain(voteObj.chainTransactionId, choix);
+        rememberVoteCast(voteObj.chainTransactionId, addr, choix);
+        setMesVotes((prev) => ({ ...prev, [voteId]: choix }));
+        if (res?.hash)
+          setVoteProofById((prev) => ({ ...prev, [voteId]: res.hash }));
+        showNotif(
+          choix === 'oui'
+            ? '✅ Vote OUI enregistré sur Polygon !'
+            : '❌ Vote NON enregistré sur Polygon !',
+          'success'
+        );
+        setVoteEnCours(null);
+        return;
+      }
+
       if (useDemo) {
-        // Mode démo : juste mise à jour locale
-        setMesVotes(prev => ({ ...prev, [voteId]: choix }));
-        setVotes(prev => prev.map(v => {
-          if (v.id !== voteId) return v;
-          return {
-            ...v,
-            votesOui: choix === 'oui' ? v.votesOui + 1 : v.votesOui,
-            votesNon: choix === 'non' ? v.votesNon + 1 : v.votesNon,
-          };
-        }));
+        setMesVotes((prev) => ({ ...prev, [voteId]: choix }));
+        setVotesFb((prev) =>
+          prev.map((v) => {
+            if (v.id !== voteId) return v;
+            return {
+              ...v,
+              votesOui: choix === 'oui' ? (v.votesOui || 0) + 1 : v.votesOui || 0,
+              votesNon: choix === 'non' ? (v.votesNon || 0) + 1 : v.votesNon || 0,
+            };
+          })
+        );
       } else {
         // Mode Firebase réel
         const bulletinRef = doc(db, 'bulletins_vote', `${userData.uid}_${voteId}`);
@@ -405,6 +523,18 @@ export default function Vote({ userData }) {
           [`votes${choix === 'oui' ? 'Oui' : 'Non'}`]: increment(1),
         });
 
+        const voteAfterSnap = await getDoc(voteRef);
+        if (voteAfterSnap.exists()) {
+          const voteAfter = { id: voteId, ...voteAfterSnap.data() };
+          const applied = await finalizeRoleChangeVote(voteId, voteAfter);
+          if (applied) {
+            showNotif(
+              `✅ Vote approuvé : le rôle de ${voteAfter.targetUserName || 'ce membre'} a été mis à jour.`,
+              'success'
+            );
+          }
+        }
+
         setMesVotes(prev => ({ ...prev, [voteId]: choix }));
       }
 
@@ -415,7 +545,10 @@ export default function Vote({ userData }) {
         'success'
       );
     } catch (err) {
-      showNotif('❌ Erreur lors du vote. Réessayez.', 'error');
+      showNotif(
+        err?.message || '❌ Erreur lors du vote. Réessayez.',
+        'error'
+      );
     }
     setVoteEnCours(null);
   }
@@ -438,6 +571,12 @@ export default function Vote({ userData }) {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
+
+      {cachedNotice && (
+        <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {cachedNotice}
+        </div>
+      )}
 
       {/* ── NOTIFICATION ── */}
       {notification && (
@@ -485,6 +624,8 @@ export default function Vote({ userData }) {
                 userData={userData}
                 onVote={handleVote}
                 monVote={mesVotes[voteSelectionne.id]}
+                voteProofHash={voteProofById[voteSelectionne.id]}
+                votePending={chainVotePending}
               />
             )}
           </div>
@@ -624,8 +765,10 @@ export default function Vote({ userData }) {
                 </div>
               </div>
               <div className="mt-4 pt-3 border-t border-green-700">
-                <p className="text-xs text-green-400 font-mono">
-                  Contract: 0x1a2b...9f3d
+                <p className="text-xs text-green-400 font-mono break-all">
+                  {isContractConfigured()
+                    ? `${CONTRACT_ADDRESS.slice(0, 10)}…${CONTRACT_ADDRESS.slice(-6)}`
+                    : 'Non configuré (voir .env)'}
                 </p>
                 <p className="text-xs text-green-500 mt-1">
                   Déployé · Vérifié · Immuable

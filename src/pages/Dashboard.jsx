@@ -1,9 +1,17 @@
-import { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { useState, useEffect, useMemo } from 'react';
+import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { Link } from 'react-router-dom';
 import WalletConnect from '../components/WalletConnect';
+import {
+  useTransactions,
+  useSolde,
+  useOpenVotes,
+  getStoredVoteChoice,
+} from '../hooks/useBlockchain';
+import { getExplorerTxUrl, isContractConfigured, CONTRACT_ADDRESS } from '../config/blockchain';
+import { getAddress } from '../hooks/useWallet';
 
 function genHash() {
   return '0x' + Array.from({ length: 8 }, () =>
@@ -33,6 +41,7 @@ function StatCard({ icon, label, value, sub, color, bgColor }) {
 }
 
 function TransactionRow({ tx }) {
+  const onChainHash = tx.explorerTxHash || (tx.hash?.startsWith?.('0x') ? tx.hash : null);
   const isEntree = tx.type === 'entree' || tx.type === 'revenu';
   const statutColors = {
     valide: 'bg-green-100 text-green-700',
@@ -52,7 +61,20 @@ function TransactionRow({ tx }) {
       <div className="flex-1 min-w-0">
         <p className="text-sm font-semibold text-gray-900 truncate">{tx.titre}</p>
         <p className="text-xs text-gray-400 mt-0.5 truncate">
-          {formatDate(tx.date)} · <span className="font-mono text-green-600">{tx.hash || genHash()}</span>
+          {formatDate(tx.date)} ·{' '}
+          {onChainHash ? (
+            <a
+              href={getExplorerTxUrl(onChainHash) || '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono text-green-600 hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {onChainHash.slice(0, 10)}…
+            </a>
+          ) : (
+            <span className="font-mono text-green-600">{tx.hash || genHash()}</span>
+          )}
         </p>
       </div>
       <div className="text-right flex-shrink-0">
@@ -97,77 +119,98 @@ function calculerGraphique(transactions) {
 }
 
 export default function Dashboard({ userData, notifications }) {
-  const [transactions, setTransactions] = useState([]);
-  const [toutesTransactions, setToutesTransactions] = useState([]);
-  const [votes, setVotes] = useState([]);
+  const {
+    transactions: toutesTransactions,
+    loading: txLoading,
+    cachedNotice,
+    source,
+    demoMode,
+  } = useTransactions({ firebaseFallback: true });
+  const { solde: soldeContrat, loading: soldeLoading } = useSolde();
+  const transactions = useMemo(
+    () => toutesTransactions.slice(0, 5),
+    [toutesTransactions]
+  );
+  const { votes: votesChain } = useOpenVotes(toutesTransactions);
+
+  const [votesFb, setVotesFb] = useState([]);
   const [mesVotes, setMesVotes] = useState({});
-  const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
-  // Horloge
+
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Toutes les transactions pour graphique + solde
-  useEffect(() => {
-    const q = query(collection(db, 'transactions'), orderBy('date', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setToutesTransactions(data);
-      setTransactions(data.slice(0, 5));
-      setLoading(false);
-    }, () => setLoading(false));
-    return () => unsub();
-  }, []);
+  const votes = useMemo(() => {
+    if (votesChain.length > 0) return votesChain;
+    const now = new Date();
+    return votesFb.filter((v) => {
+      if (v.statut !== 'ouvert') return false;
+      const expiration = v.dateExpiration?.toDate
+        ? v.dateExpiration.toDate()
+        : new Date(v.dateExpiration);
+      return expiration > now;
+    });
+  }, [votesChain, votesFb]);
 
-  // Votes en cours
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'votes'), (snap) => {
-      const now = new Date();
-      const data = snap.docs
-        .map(d => ({ id: d.id, ...d.data() }))
-        .filter(v => {
-          if (v.statut !== 'ouvert') return false;
-          // Vérifier si le vote n'a pas expiré
-          const expiration = v.dateExpiration?.toDate ? v.dateExpiration.toDate() : new Date(v.dateExpiration);
-          return expiration > now;
-        });
-      setVotes(data);
+      const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setVotesFb(data);
     });
     return () => unsub();
   }, []);
 
-  // Mes votes (pour savoir si j'ai déjà voté)
   useEffect(() => {
     if (!userData?.uid) return;
     const unsub = onSnapshot(collection(db, 'bulletins_vote'), (snap) => {
-      const myVotes = {};
-      snap.docs.forEach(d => {
-        const data = d.data();
-        if (data.userId === userData.uid) {
-          myVotes[data.voteId] = data.choix;
-        }
+      const myVotesFb = {};
+      snap.docs.forEach((d) => {
+        const dat = d.data();
+        if (dat.userId === userData.uid) myVotesFb[dat.voteId] = dat.choix;
       });
-      setMesVotes(myVotes);
+      setMesVotes((prev) => ({ ...myVotesFb, ...prev }));
     });
     return () => unsub();
   }, [userData]);
 
-  // ── Calculs automatiques depuis Firebase ──
-  const solde = toutesTransactions
-    .filter(t => t.statut === 'valide')
-    .reduce((acc, tx) => {
-      const isEntree = tx.type === 'entree' || tx.type === 'revenu';
-      return isEntree ? acc + (tx.montant || 0) : acc - (tx.montant || 0);
-    }, 0); // ← Commence à 0, pas hardcodé !
+  useEffect(() => {
+    const addr = getAddress();
+    if (!addr) return;
+    setMesVotes((prev) => {
+      const next = { ...prev };
+      votesChain.forEach((v) => {
+        if (!v.chainTransactionId) return;
+        const ch = getStoredVoteChoice(v.chainTransactionId, addr);
+        if (ch) next[v.id] = ch;
+      });
+      return next;
+    });
+  }, [votesChain]);
+
+  const soldeFirebase = useMemo(
+    () =>
+      toutesTransactions
+        .filter((t) => t.statut === 'valide')
+        .reduce((acc, tx) => {
+          const isEntree = tx.type === 'entree' || tx.type === 'revenu';
+          return isEntree ? acc + (tx.montant || 0) : acc - (tx.montant || 0);
+        }, 0),
+    [toutesTransactions]
+  );
+
+  const solde =
+    isContractConfigured() && source === 'chain' && !demoMode
+      ? soldeContrat
+      : soldeFirebase;
 
   const depensesMois = toutesTransactions
-    .filter(t => t.statut === 'valide' && (t.type === 'sortie' || t.type === 'depense'))
+    .filter((t) => t.statut === 'valide' && (t.type === 'sortie' || t.type === 'depense'))
     .reduce((a, t) => a + (t.montant || 0), 0);
 
   const revenusMois = toutesTransactions
-    .filter(t => t.statut === 'valide' && (t.type === 'entree' || t.type === 'revenu'))
+    .filter((t) => t.statut === 'valide' && (t.type === 'entree' || t.type === 'revenu'))
     .reduce((a, t) => a + (t.montant || 0), 0);
 
   // Graphique depuis vraies données
@@ -179,17 +222,26 @@ export default function Dashboard({ userData, notifications }) {
   const peutCreerTransaction =
     userData?.role === 'tresorier' || userData?.role === 'president';
 
-  if (loading) return (
+  if (txLoading && toutesTransactions.length === 0) return (
     <div className="flex items-center justify-center h-64">
       <div className="text-center">
         <div className="text-5xl mb-3 animate-pulse">🌱</div>
         <p className="text-green-700 font-semibold">Chargement du registre...</p>
+        {soldeLoading && (
+          <p className="text-xs text-gray-500 mt-2">Synchronisation du solde…</p>
+        )}
       </div>
     </div>
   );
 
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-6">
+
+      {cachedNotice && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {cachedNotice}
+        </div>
+      )}
 
       {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
@@ -292,7 +344,11 @@ export default function Dashboard({ userData, notifications }) {
             </p>
             <div className="bg-white/15 backdrop-blur border border-white/20 rounded-xl px-4 py-2 self-start sm:self-auto">
               <p className="text-green-300 text-xs font-medium">🔒 Sécurisé par Blockchain</p>
-              <p className="text-green-400 font-mono text-xs mt-0.5">{genHash()}</p>
+              <p className="text-green-400 font-mono text-xs mt-0.5 truncate max-w-[200px]">
+                {isContractConfigured()
+                  ? `${CONTRACT_ADDRESS.slice(0, 8)}…${CONTRACT_ADDRESS.slice(-4)}`
+                  : genHash()}
+              </p>
             </div>
           </div>
         </div>
@@ -424,7 +480,20 @@ export default function Dashboard({ userData, notifications }) {
                     <p className="text-xs text-gray-500 mt-0.5">
                       {(tx.montant || 0).toLocaleString('fr-FR')} FCFA · {formatDate(tx.date)}
                     </p>
-                    <p className="text-xs font-mono text-green-600 mt-0.5 truncate">{tx.hash || genHash()}</p>
+                    <p className="text-xs font-mono text-green-600 mt-0.5 truncate">
+                      {tx.explorerTxHash || tx.hash ? (
+                        <a
+                          href={getExplorerTxUrl(tx.explorerTxHash || tx.hash) || '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline"
+                        >
+                          {(tx.explorerTxHash || tx.hash).slice(0, 12)}…
+                        </a>
+                      ) : (
+                        tx.hash || genHash()
+                      )}
+                    </p>
                   </div>
                 </div>
               ))}

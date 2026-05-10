@@ -1,19 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { usePolygon } from '../hooks/usePolygon';
-import { getPolygonscanUrl } from '../config/polygon';
+import { getExplorerTxUrl } from '../config/blockchain';
 
 export default function BlockchainInfo({ transaction }) {
   const { generateQRCode } = usePolygon();
   const [qrCode, setQrCode] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    if (transaction?.hash && transaction.hash.startsWith('0x')) {
-      generateQR();
-    }
-  }, [transaction]);
-
-  const generateQR = async () => {
+  const generateQR = useCallback(async () => {
+    if (!transaction?.hash) return;
     setLoading(true);
     try {
       const qr = await generateQRCode(transaction.hash);
@@ -23,13 +18,21 @@ export default function BlockchainInfo({ transaction }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [generateQRCode, transaction]);
+
+  useEffect(() => {
+    if (transaction?.hash && transaction.hash.startsWith('0x')) {
+      generateQR();
+    }
+  }, [transaction, generateQR]);
 
   if (!transaction?.hash || !transaction.hash.startsWith('0x')) {
     return null;
   }
 
-  const polygonscanUrl = getPolygonscanUrl('tx', transaction.hash);
+  const polygonscanUrl =
+    getExplorerTxUrl(transaction.hash) ||
+    `https://polygonscan.com/tx/${transaction.hash}`;
 
   return (
     <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-xl p-4 mt-4">

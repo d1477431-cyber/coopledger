@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
-import { db } from '../firebase';
+import { useState, useMemo } from 'react';
 import BlockchainInfo from '../components/BlockchainInfo';
+import { useTransactions, useSolde } from '../hooks/useBlockchain';
+import { isContractConfigured, getExplorerTxUrl } from '../config/blockchain';
+import BlockchainBadge from '../components/BlockchainBadge';
 
 function formatFCFA(n) {
   return (n || 0).toLocaleString('fr-FR') + ' FCFA';
@@ -55,7 +56,28 @@ function TransactionRow({ tx, index }) {
         </td>
         <td className="px-4 py-3">
           <p className="text-sm font-semibold text-gray-900">{tx.titre}</p>
-          <p className="text-xs text-gray-400 font-mono mt-0.5">{tx.hash || genHash()}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            {(tx.explorerTxHash || (tx.hash?.startsWith?.('0x') ? tx.hash : null)) && (
+              <BlockchainBadge
+                hash={tx.explorerTxHash || tx.hash}
+                className="!animate-none"
+              />
+            )}
+            <p className="text-xs text-gray-400 font-mono">
+              {tx.explorerTxHash || tx.hash ? (
+                <a
+                  href={getExplorerTxUrl(tx.explorerTxHash || tx.hash) || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-green-700 hover:underline"
+                >
+                  {(tx.explorerTxHash || tx.hash).slice(0, 14)}…
+                </a>
+              ) : (
+                tx.hash || genHash()
+              )}
+            </p>
+          </div>
         </td>
         <td className="px-4 py-3 text-right">
           <span className={`text-sm font-bold ${type.color}`}>
@@ -67,6 +89,11 @@ function TransactionRow({ tx, index }) {
             <span className={`w-1.5 h-1.5 rounded-full ${statut.dot}`} />
             {statut.label}
           </span>
+          {tx.source === 'polygon' && (
+            <p className="text-[10px] text-emerald-600 font-semibold mt-1">
+              ✓ Vérifié sur Polygon
+            </p>
+          )}
         </td>
         <td className="px-4 py-3 text-sm text-gray-500 text-center">{tx.initiateur || '—'}</td>
         <td className="px-4 py-3 text-center text-gray-400">
@@ -128,7 +155,28 @@ function TransactionCard({ tx }) {
             <p className="text-xs text-gray-400">{formatDate(tx.date)}</p>
             {tx.initiateur && <p className="text-xs text-gray-400">· {tx.initiateur}</p>}
           </div>
-          <p className="text-xs font-mono text-green-600 mt-0.5 truncate">{tx.hash || genHash()}</p>
+          <div className="mt-1 space-y-1">
+            {(tx.explorerTxHash || tx.hash?.startsWith?.('0x')) && (
+              <BlockchainBadge hash={tx.explorerTxHash || tx.hash} className="!text-[10px] !py-1" />
+            )}
+            <p className="text-xs font-mono text-green-600 truncate">
+              {tx.explorerTxHash || tx.hash ? (
+                <a
+                  href={getExplorerTxUrl(tx.explorerTxHash || tx.hash) || '#'}
+                  className="hover:underline"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {(tx.explorerTxHash || tx.hash).slice(0, 12)}…
+                </a>
+              ) : (
+                tx.hash || genHash()
+              )}
+            </p>
+            {tx.source === 'polygon' && (
+              <p className="text-[10px] text-emerald-600 font-semibold">✓ Vérifié sur Polygon</p>
+            )}
+          </div>
         </div>
         {/* Montant + statut */}
         <div className="text-right flex-shrink-0">
@@ -168,25 +216,14 @@ function TransactionCard({ tx }) {
 }
 
 export default function Historique({ userData }) {
-  const [transactions, setTransactions] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { transactions, loading, cachedNotice, source, demoMode } = useTransactions({
+    firebaseFallback: true,
+  });
+  const { solde: soldeChain } = useSolde();
   const [filtre, setFiltre] = useState('tout');
   const [recherche, setRecherche] = useState('');
   const [page, setPage] = useState(1);
   const PAR_PAGE = 5;
-
-  useEffect(() => {
-    const q = query(collection(db, 'transactions'), orderBy('date', 'desc'));
-    const unsub = onSnapshot(q, (snap) => {
-      // ✅ Seulement les vraies données — pas de fallback fictif
-      setTransactions(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    }, (err) => {
-      console.error(err);
-      setLoading(false);
-    });
-    return () => unsub();
-  }, []);
 
   const filtrees = transactions.filter(tx => {
     const matchFiltre =
@@ -203,12 +240,21 @@ export default function Historique({ userData }) {
   const totalPages = Math.ceil(filtrees.length / PAR_PAGE);
   const affichees = filtrees.slice((page - 1) * PAR_PAGE, page * PAR_PAGE);
 
-  const soldeTotal = transactions
-    .filter(t => t.statut === 'valide')
-    .reduce((acc, tx) => {
-      const isEntree = tx.type === 'revenu' || tx.type === 'entree';
-      return isEntree ? acc + (tx.montant || 0) : acc - (tx.montant || 0);
-    }, 0);
+  const soldeFirebase = useMemo(
+    () =>
+      transactions
+        .filter((t) => t.statut === 'valide')
+        .reduce((acc, tx) => {
+          const isEntree = tx.type === 'revenu' || tx.type === 'entree';
+          return isEntree ? acc + (tx.montant || 0) : acc - (tx.montant || 0);
+        }, 0),
+    [transactions]
+  );
+
+  const soldeTotal =
+    isContractConfigured() && source === 'chain' && !demoMode
+      ? soldeChain
+      : soldeFirebase;
 
   const revenuMensuel = transactions
     .filter(t => (t.type === 'revenu' || t.type === 'entree') && t.statut === 'valide')
@@ -225,6 +271,12 @@ export default function Historique({ userData }) {
 
   return (
     <div className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6 space-y-4 sm:space-y-6">
+
+      {cachedNotice && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {cachedNotice}
+        </div>
+      )}
 
       {/* HEADER */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">

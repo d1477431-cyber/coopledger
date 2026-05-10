@@ -1,8 +1,12 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   collection,
+  addDoc,
+  getDocs,
+  limit,
   onSnapshot,
   query,
+  serverTimestamp,
   where,
   orderBy,
   doc,
@@ -33,6 +37,10 @@ const ROLE_CONFIG = {
     icon: '👤',
   },
 };
+
+function roleLabel(role = 'membre') {
+  return ROLE_CONFIG[role]?.label || role;
+}
 
 /** Initiales pour avatars */
 function getInitiales(nom = '') {
@@ -367,26 +375,83 @@ export default function Membres({ userData, notifications }) {
       return;
     }
 
-    if (nextRole === 'president') {
-      if (!presidencyConfirm) return;
-      try {
-        await commitPresidencyToTarget(target.uid);
-        showToast('Présidence mise à jour', 'success');
-        setRoleModal(null);
-        setPresidencyConfirm(false);
-      } catch {
-        showToast('Erreur lors du transfert de présidence', 'error');
-      }
-      return;
-    }
-
     try {
-      await updateDoc(doc(db, 'users', target.uid), { role: nextRole });
-      showToast('Rôle mis à jour avec succès', 'success');
+      if (nextRole === 'president' && !presidencyConfirm) return;
+
+      const existingRoleChangeVote = await getDocs(
+        query(
+          collection(db, 'votes'),
+          where('typeVote', '==', 'role_change'),
+          where('statut', '==', 'ouvert'),
+          where('targetUserId', '==', target.uid),
+          where('newRole', '==', nextRole),
+          limit(1)
+        )
+      );
+      if (!existingRoleChangeVote.empty) {
+        showToast(
+          'Un vote pour ce changement de rôle est déjà en cours pour ce membre.',
+          'error'
+        );
+        return;
+      }
+
+      const now = new Date();
+      const expiration = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const totalActifs = membres.filter((m) => m.statut === 'actif').length;
+      const majoriteRequise = Math.floor(totalActifs / 2) + 1;
+
+      const voteRef = await addDoc(collection(db, 'votes'), {
+        typeVote: 'role_change',
+        titre: `Changement de rôle : ${target.nom || 'Membre'}`,
+        description: `${userData?.nom || 'Le président'} propose de passer ${target.nom || 'ce membre'} de ${roleLabel(target.role)} à ${roleLabel(nextRole)}.`,
+        targetUserId: target.uid,
+        targetUserName: target.nom || 'Membre',
+        oldRole: target.role || 'membre',
+        newRole: nextRole,
+        createdBy: userData?.uid || null,
+        createdByName: userData?.nom || 'Président',
+        createdByRole: 'president',
+        statut: 'ouvert',
+        votesOui: 0,
+        votesNon: 0,
+        totalMembres: totalActifs,
+        quorumRequis: 0,
+        majoriteRequise,
+        dateCreation: now,
+        dateExpiration: expiration,
+        applique: false,
+        montant: 0,
+        categorie: 'gouvernance',
+        fournisseur: 'CoopLedger',
+        hash: `role-change-${target.uid}-${Date.now()}`,
+        priorite: 'routine',
+        initiateur: userData?.nom || 'Président',
+        roleInitiateur: 'Président',
+        txId: `RC-${Date.now()}`,
+        createdAt: serverTimestamp(),
+      });
+
+      if (notifyPerm === 'granted' && typeof sendNotification === 'function') {
+        sendNotification({
+          title: '🗳️ Vote requis : changement de rôle',
+          body: `${target.nom || 'Un membre'} : ${roleLabel(target.role)} → ${roleLabel(nextRole)}. Votre vote est requis.`,
+          tag: `vote-role-change-${voteRef.id}`,
+          data: { url: '/vote', voteId: voteRef.id },
+        });
+      }
+
+      showToast(
+        'Vote de changement de rôle créé et notification envoyée aux membres.',
+        'success'
+      );
       setRoleModal(null);
       setPresidencyConfirm(false);
     } catch {
-      showToast('Erreur lors de la mise à jour du rôle', 'error');
+      showToast(
+        'Erreur lors de la création du vote de changement de rôle',
+        'error'
+      );
     }
   };
 

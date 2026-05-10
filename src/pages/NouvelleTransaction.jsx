@@ -3,7 +3,10 @@ import { collection, addDoc, doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useNavigate } from 'react-router-dom';
 import { useNotifications } from '../hooks/useNotifications';
-import { usePolygon } from '../hooks/usePolygon';
+import { useBlockchainWrite } from '../hooks/useBlockchain';
+import { useWallet } from '../hooks/useWallet';
+import { isContractConfigured } from '../config/blockchain';
+import BlockchainBadge from '../components/BlockchainBadge';
 
 const SEUIL_VOTE = 500000;
 
@@ -32,10 +35,12 @@ const CATEGORIES = [
 export default function NouvelleTransaction({ userData }) {
   const navigate = useNavigate();
   const notifications = useNotifications(userData);
-  const { createBlockchainTransaction, isConnected, loading: blockchainLoading } = usePolygon();
+  const { createTransaction, pending: blockchainPending } = useBlockchainWrite();
+  const { ensureWallet } = useWallet();
   const [etape, setEtape] = useState(1); // 1=formulaire, 2=confirmation, 3=succès
   const [loading, setLoading] = useState(false);
   const [erreur, setErreur] = useState('');
+  const [chainResult, setChainResult] = useState(null);
 
   const [form, setForm] = useState({
     titre: '',
@@ -69,21 +74,52 @@ export default function NouvelleTransaction({ userData }) {
   async function soumettre() {
     setLoading(true);
     setErreur('');
+    setChainResult(null);
+    let usedPolygon = false;
+
     try {
-      // Générer un vrai hash blockchain si wallet connecté et vote requis
-      let blockchainData = null;
-      if (necessiteVote && isConnected) {
+      if (isContractConfigured()) {
         try {
-          blockchainData = await createBlockchainTransaction(
+          ensureWallet();
+          const result = await createTransaction(
+            form.titre,
             montantNum,
-            `${form.titre} - ${form.description || 'Dépense coopérative'}`
+            form.type,
+            form.categorie
           );
-        } catch (blockchainError) {
-          console.warn('Erreur blockchain, continuation sans:', blockchainError);
-          // Continuer sans blockchain si erreur
+          usedPolygon = true;
+          setChainResult(result);
+          if (necessiteVote) {
+            try {
+              await notifications.sendNotification({
+                title: 'Nouveau vote requis',
+                body: `${form.titre} - ${montantNum.toLocaleString('fr-FR')} FCFA`,
+                icon: '/icon-192x192.png',
+                badge: '/icon-192x192.png',
+                tag: `vote-chain-${result.transactionId || result.hash}`,
+                data: {
+                  url: '/vote',
+                  voteId: result.transactionId
+                    ? `chain-${result.transactionId}`
+                    : 'vote',
+                },
+              });
+            } catch (n) {
+              console.warn('Notification:', n);
+            }
+          }
+          setEtape(3);
+          return;
+        } catch (bcErr) {
+          console.warn('Polygon indisponible, bascule Firebase :', bcErr);
+          setErreur(
+            bcErr?.message ||
+              'Blockchain indisponible. Enregistrement classique (Firebase).'
+          );
         }
       }
 
+      const fauxHash = usedPolygon ? null : txHash;
       const txData = {
         titre: form.titre,
         montant: montantNum,
@@ -97,22 +133,15 @@ export default function NouvelleTransaction({ userData }) {
         creePar: userData?.uid || 'demo',
         initiateur: userData?.nom || userData?.email || 'Trésorier',
         date: new Date(),
-        hash: blockchainData?.hash || txHash,
+        hash: fauxHash,
         txId: txId,
-        bloc: blockchainData?.blockNumber || '#' + (Math.floor(Math.random() * 100000) + 400000),
-        blockchain: blockchainData ? {
-          hash: blockchainData.hash,
-          blockNumber: blockchainData.blockNumber,
-          gasUsed: blockchainData.gasUsed,
-          polygonscanUrl: blockchainData.polygonscanUrl,
-          timestamp: new Date()
-        } : null,
+        bloc: '#' + (Math.floor(Math.random() * 100000) + 400000),
+        source: 'firebase',
+        blockchain: null,
       };
 
-      // Enregistrer la transaction
       const txRef = await addDoc(collection(db, 'transactions'), txData);
 
-      // Si montant > seuil → créer automatiquement un vote
       if (necessiteVote) {
         await setDoc(doc(db, 'votes', txRef.id), {
           titre: form.titre,
@@ -121,7 +150,7 @@ export default function NouvelleTransaction({ userData }) {
           categorie: form.categorie,
           quantite: form.quantite,
           fournisseur: form.fournisseur,
-          typeRegistre: blockchainData ? 'Smart Contract Polygon' : 'Smart Contract V2',
+          typeRegistre: 'Firebase (secours)',
           initiateur: userData?.nom || 'Trésorier',
           roleInitiateur: userData?.role || 'Trésorier',
           createurUid: userData?.uid || null,
@@ -139,23 +168,18 @@ export default function NouvelleTransaction({ userData }) {
           transactionId: txRef.id,
         });
 
-        // Envoyer une notification push aux membres
         await notifications.sendNotification({
           title: 'Nouveau vote requis',
           body: `${form.titre} - ${montantNum.toLocaleString('fr-FR')} FCFA`,
           icon: '/icon-192x192.png',
           badge: '/icon-192x192.png',
           tag: `vote-${txRef.id}`,
-          data: {
-            url: '/vote',
-            voteId: txRef.id
-          }
+          data: { url: '/vote', voteId: txRef.id },
         });
       }
 
       setEtape(3);
     } catch (err) {
-      // Mode démo si Firebase échoue
       setEtape(3);
     }
     setLoading(false);
@@ -181,10 +205,22 @@ export default function NouvelleTransaction({ userData }) {
         {/* Détails blockchain */}
         <div className="bg-green-50 border border-green-200 rounded-2xl p-5 text-left mb-6">
           <p className="text-sm font-bold text-green-800 mb-3">🔗 Reçu Blockchain</p>
+          {chainResult?.hash && (
+            <div className="mb-4">
+              <BlockchainBadge hash={chainResult.hash} />
+            </div>
+          )}
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-gray-500">Hash :</span>
-              <span className="font-mono text-green-700 text-xs">{txHash}</span>
+              <a
+                className="font-mono text-green-700 text-xs underline hover:text-green-900"
+                href={chainResult?.explorerUrl || undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {chainResult?.hash || txHash}
+              </a>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-500">ID Transaction :</span>
@@ -310,10 +346,10 @@ export default function NouvelleTransaction({ userData }) {
             </button>
             <button
               onClick={soumettre}
-              disabled={loading}
+              disabled={loading || blockchainPending}
               className="flex-1 bg-green-700 hover:bg-green-800 text-white py-3.5 rounded-2xl font-bold transition disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {loading ? (
+              {loading || blockchainPending ? (
                 <> Enregistrement...</>
               ) : (
                 <> Confirmer & Enregistrer</>
