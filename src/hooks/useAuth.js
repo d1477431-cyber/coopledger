@@ -46,11 +46,17 @@ export function useAuth() {
                     }
                   });
                 } else if (refusee) {
-                  setDemandeEnAttente({ ...refusee, statut: 'refusee' });
+                  setDemandeEnAttente((prev) =>
+                    prev?.id === refusee.id && prev?.statut === 'refusee'
+                      ? prev
+                      : { ...refusee, statut: 'refusee' }
+                  );
                 } else if (enAttente) {
-                  setDemandeEnAttente(enAttente);
+                  setDemandeEnAttente((prev) =>
+                    prev?.id === enAttente.id ? prev : enAttente
+                  );
                 } else {
-                  setDemandeEnAttente(null);
+                  setDemandeEnAttente((prev) => (prev === null ? prev : null));
                 }
               }
             );

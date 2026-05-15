@@ -440,21 +440,25 @@ export default function Vote({ userData }) {
       setMesVotes((prev) => ({ ...myVotesFb, ...prev }));
     });
     return () => unsub();
-  }, [userData]);
+  }, [userData?.uid]);
 
   useEffect(() => {
     const addr = getAddress();
-    if (!addr) return;
+    if (!addr || votesOuvertsChain.length === 0) return;
     setMesVotes((prev) => {
       const next = { ...prev };
+      let changed = false;
       votesOuvertsChain.forEach((v) => {
         if (!v.chainTransactionId) return;
         const raw = localStorage.getItem(
           `coopledger_vote_${v.chainTransactionId}_${addr}`
         );
-        if (raw === 'oui' || raw === 'non') next[v.id] = raw;
+        if ((raw === 'oui' || raw === 'non') && next[v.id] !== raw) {
+          next[v.id] = raw;
+          changed = true;
+        }
       });
-      return next;
+      return changed ? next : prev;
     });
   }, [votesOuvertsChain]);
 

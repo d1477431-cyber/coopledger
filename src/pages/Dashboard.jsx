@@ -163,19 +163,23 @@ export default function Dashboard({ userData, notifications }) {
       setMesVotes((prev) => ({ ...myVotesFb, ...prev }));
     });
     return () => unsub();
-  }, [userData]);
+  }, [userData?.uid]);
 
   useEffect(() => {
     const addr = getAddress();
-    if (!addr) return;
+    if (!addr || votesChain.length === 0) return;
     setMesVotes((prev) => {
       const next = { ...prev };
+      let changed = false;
       votesChain.forEach((v) => {
         if (!v.chainTransactionId) return;
         const ch = getStoredVoteChoice(v.chainTransactionId, addr);
-        if (ch) next[v.id] = ch;
+        if (ch && next[v.id] !== ch) {
+          next[v.id] = ch;
+          changed = true;
+        }
       });
-      return next;
+      return changed ? next : prev;
     });
   }, [votesChain]);
 

@@ -1,30 +1,44 @@
-import { useState, useEffect, useCallback } from 'react';
-import { usePolygon } from '../hooks/usePolygon';
+import { useState, useEffect } from 'react';
 import { getExplorerTxUrl } from '../config/blockchain';
+import { getPolygonscanUrl } from '../config/polygon';
 
 export default function BlockchainInfo({ transaction }) {
-  const { generateQRCode } = usePolygon();
   const [qrCode, setQrCode] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const generateQR = useCallback(async () => {
-    if (!transaction?.hash) return;
-    setLoading(true);
-    try {
-      const qr = await generateQRCode(transaction.hash);
-      setQrCode(qr);
-    } catch (error) {
-      console.error('Erreur génération QR:', error);
-    } finally {
-      setLoading(false);
-    }
-  }, [generateQRCode, transaction]);
+  const txHash = transaction?.hash;
 
   useEffect(() => {
-    if (transaction?.hash && transaction.hash.startsWith('0x')) {
-      generateQR();
+    if (!txHash || !txHash.startsWith('0x')) {
+      setQrCode(null);
+      return;
     }
-  }, [transaction, generateQR]);
+
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      try {
+        const QRCode = (await import('qrcode')).default;
+        const url = getPolygonscanUrl('tx', txHash);
+        const dataUrl = await QRCode.toDataURL(url, {
+          width: 256,
+          margin: 2,
+          color: { dark: '#000000', light: '#FFFFFF' },
+        });
+        if (!cancelled) setQrCode(dataUrl);
+      } catch (error) {
+        console.error('Erreur génération QR:', error);
+        if (!cancelled) setQrCode(null);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [txHash]);
 
   if (!transaction?.hash || !transaction.hash.startsWith('0x')) {
     return null;

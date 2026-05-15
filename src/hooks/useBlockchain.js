@@ -94,8 +94,11 @@ export function useSolde() {
   return { solde, loading };
 }
 
+/** Référence stable — évite les boucles infinies dans les useEffect ([votesChain]). */
+const EMPTY_OPEN_VOTES = [];
+
 export function useOpenVotes() {
-  return { votes: [] };
+  return { votes: EMPTY_OPEN_VOTES };
 }
 
 export function useBlockchainWrite() {
