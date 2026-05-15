@@ -2,8 +2,6 @@ import { useState, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { POLYGON_CONFIG, COOPERATIVE_ABI, getPolygonscanUrl } from '../config/polygon';
 
-const POLYGONSCAN_URL = "https://api.polygonscan.com";
-
 export function usePolygon() {
   const [provider, setProvider] = useState(null);
   const [signer, setSigner] = useState(null);
@@ -152,7 +150,7 @@ export function usePolygon() {
   const generateQRCode = async (transactionHash) => {
     try {
       const QRCode = require('qrcode');
-      const polygonscanUrl = `${POLYGONSCAN_URL}/tx/${transactionHash}`;
+      const polygonscanUrl = getPolygonscanUrl('tx', transactionHash);
 
       // Générer le QR code en base64
       const qrCodeDataURL = await QRCode.toDataURL(polygonscanUrl, {

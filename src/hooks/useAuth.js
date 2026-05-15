@@ -1,58 +1,82 @@
 import { useState, useEffect } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 
 export function useAuth() {
   const [user, setUser] = useState(null);
   const [userData, setUserData] = useState(null);
+  const [demandeEnAttente, setDemandeEnAttente] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let unsubDemande = null;
+
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (unsubDemande) {
+        unsubDemande();
+        unsubDemande = null;
+      }
+
       if (firebaseUser) {
         setUser(firebaseUser);
-
         try {
-          // Chercher le profil dans Firestore
           const userRef = doc(db, 'users', firebaseUser.uid);
           const userSnap = await getDoc(userRef);
-
           if (userSnap.exists()) {
-            // Profil trouvé → on l'utilise
             setUserData({ uid: firebaseUser.uid, ...userSnap.data() });
+            setDemandeEnAttente(null);
           } else {
-            // Profil pas trouvé → on crée un profil membre par défaut
-            const defaultProfile = {
-              uid: firebaseUser.uid,
-              email: firebaseUser.email,
-              nom: firebaseUser.email.split('@')[0],
-              role: 'membre',
-              cooperativeId: 'broukou',
-              dateInscription: new Date(),
-              statut: 'actif',
-            };
-            await setDoc(userRef, defaultProfile);
-            setUserData(defaultProfile);
+            setUserData(null);
+            unsubDemande = onSnapshot(
+              query(
+                collection(db, 'demandes_compte'),
+                where('uid', '==', firebaseUser.uid)
+              ),
+              (snap) => {
+                const demandes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+                const enAttente = demandes.find((d) => d.statut === 'en_attente');
+                const validee = demandes.find((d) => d.statut === 'validee');
+                const refusee = demandes.find((d) => d.statut === 'refusee');
+                if (validee) {
+                  getDoc(doc(db, 'users', firebaseUser.uid)).then((s) => {
+                    if (s.exists()) {
+                      setUserData({ uid: firebaseUser.uid, ...s.data() });
+                      setDemandeEnAttente(null);
+                    }
+                  });
+                } else if (refusee) {
+                  setDemandeEnAttente({ ...refusee, statut: 'refusee' });
+                } else if (enAttente) {
+                  setDemandeEnAttente(enAttente);
+                } else {
+                  setDemandeEnAttente(null);
+                }
+              }
+            );
           }
         } catch (err) {
           console.error('Erreur chargement profil:', err);
-          // En cas d'erreur, profil minimal
           setUserData({
             uid: firebaseUser.uid,
             email: firebaseUser.email,
-            nom: firebaseUser.email.split('@')[0],
+            nom: firebaseUser.email?.split('@')[0],
             role: 'membre',
           });
         }
       } else {
         setUser(null);
         setUserData(null);
+        setDemandeEnAttente(null);
       }
       setLoading(false);
     });
-    return () => unsub();
+
+    return () => {
+      unsub();
+      if (unsubDemande) unsubDemande();
+    };
   }, []);
 
-  return { user, userData, loading };
+  return { user, userData, demandeEnAttente, loading };
 }

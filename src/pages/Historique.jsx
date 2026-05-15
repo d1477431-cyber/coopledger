@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import BlockchainInfo from '../components/BlockchainInfo';
 import { useTransactions, useSolde } from '../hooks/useBlockchain';
+import { calculerFinances } from '../utils/calculsFinanciers';
 import { isContractConfigured, getExplorerTxUrl } from '../config/blockchain';
 import BlockchainBadge from '../components/BlockchainBadge';
 
@@ -241,13 +242,7 @@ export default function Historique({ userData }) {
   const affichees = filtrees.slice((page - 1) * PAR_PAGE, page * PAR_PAGE);
 
   const soldeFirebase = useMemo(
-    () =>
-      transactions
-        .filter((t) => t.statut === 'valide')
-        .reduce((acc, tx) => {
-          const isEntree = tx.type === 'revenu' || tx.type === 'entree';
-          return isEntree ? acc + (tx.montant || 0) : acc - (tx.montant || 0);
-        }, 0),
+    () => calculerFinances(transactions).solde,
     [transactions]
   );
 
@@ -256,9 +251,7 @@ export default function Historique({ userData }) {
       ? soldeChain
       : soldeFirebase;
 
-  const revenuMensuel = transactions
-    .filter(t => (t.type === 'revenu' || t.type === 'entree') && t.statut === 'valide')
-    .reduce((acc, tx) => acc + (tx.montant || 0), 0);
+  const { revenus: revenuMensuel } = calculerFinances(transactions);
 
   if (loading) return (
     <div className="flex items-center justify-center h-64">

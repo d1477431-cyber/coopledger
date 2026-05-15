@@ -1,12 +1,8 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   collection,
-  addDoc,
-  getDocs,
-  limit,
   onSnapshot,
   query,
-  serverTimestamp,
   where,
   orderBy,
   doc,
@@ -139,6 +135,7 @@ function StatCard({ icon, label, value, sub }) {
 }
 
 const createMemberFn = httpsCallable(functions, 'createMember');
+const proposeRoleChangeVoteFn = httpsCallable(functions, 'proposeRoleChangeVote');
 
 /** ═══ PAGE PRINCIPALE — gestion membres & rôles ═══ */
 export default function Membres({ userData, notifications }) {
@@ -182,23 +179,77 @@ export default function Membres({ userData, notifications }) {
 
   /** ═══ Lecture membres (filtrés coop + ordre date) ═══ */
   useEffect(() => {
-    const q = query(
+    const sortedMembers = (docs) =>
+      docs
+        .map((d) => ({ uid: d.id, ...d.data() }))
+        .sort((a, b) => {
+          const da = a.dateInscription?.toDate
+            ? a.dateInscription.toDate()
+            : new Date(a.dateInscription || 0);
+          const db2 = b.dateInscription?.toDate
+            ? b.dateInscription.toDate()
+            : new Date(b.dateInscription || 0);
+          return da - db2;
+        });
+
+    const primaryQuery = query(
       collection(db, 'users'),
       where('cooperativeId', '==', cooperativeId),
       orderBy('dateInscription', 'asc')
     );
+
+    const fallbackQuery = query(
+      collection(db, 'users'),
+      where('cooperativeId', '==', cooperativeId)
+    );
+
+    let unsubFallback = null;
+
     const unsub = onSnapshot(
-      q,
+      primaryQuery,
       (snap) => {
-        setMembres(snap.docs.map((d) => ({ uid: d.id, ...d.data() })));
+        setMembres(sortedMembers(snap.docs));
         setLoading(false);
       },
-      () => {
-        showToast('Erreur lors du chargement des membres', 'error');
+      (err) => {
+        // Fallback si index composite non prêt: on lit sans orderBy puis tri local.
+        if (err?.code === 'failed-precondition') {
+          unsubFallback = onSnapshot(
+            fallbackQuery,
+            (snap) => {
+              setMembres(sortedMembers(snap.docs));
+              setLoading(false);
+            },
+            (fallbackErr) => {
+              if (fallbackErr?.code === 'permission-denied') {
+                showToast(
+                  'Accès refusé aux membres. Vérifiez les règles Firestore.',
+                  'error'
+                );
+              } else {
+                showToast('Erreur lors du chargement des membres', 'error');
+              }
+              setLoading(false);
+            }
+          );
+          return;
+        }
+
+        if (err?.code === 'permission-denied') {
+          showToast(
+            'Accès refusé aux membres. Vérifiez les règles Firestore.',
+            'error'
+          );
+        } else {
+          showToast('Erreur lors du chargement des membres', 'error');
+        }
         setLoading(false);
       }
     );
-    return () => unsub();
+    return () => {
+      unsub();
+      if (unsubFallback) unsubFallback();
+    };
   }, [cooperativeId, showToast]);
 
   /** ═══ Bulletins de vote (compte par membre + KPI participation) ═══ */
@@ -378,17 +429,13 @@ export default function Membres({ userData, notifications }) {
     try {
       if (nextRole === 'president' && !presidencyConfirm) return;
 
-      const existingRoleChangeVote = await getDocs(
-        query(
-          collection(db, 'votes'),
-          where('typeVote', '==', 'role_change'),
-          where('statut', '==', 'ouvert'),
-          where('targetUserId', '==', target.uid),
-          where('newRole', '==', nextRole),
-          limit(1)
-        )
+      const duplicateVote = votesOuverts.find(
+        (v) =>
+          v.typeVote === 'role_change' &&
+          v.targetUserId === target.uid &&
+          v.newRole === nextRole
       );
-      if (!existingRoleChangeVote.empty) {
+      if (duplicateVote) {
         showToast(
           'Un vote pour ce changement de rôle est déjà en cours pour ce membre.',
           'error'
@@ -396,48 +443,18 @@ export default function Membres({ userData, notifications }) {
         return;
       }
 
-      const now = new Date();
-      const expiration = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      const totalActifs = membres.filter((m) => m.statut === 'actif').length;
-      const majoriteRequise = Math.floor(totalActifs / 2) + 1;
-
-      const voteRef = await addDoc(collection(db, 'votes'), {
-        typeVote: 'role_change',
-        titre: `Changement de rôle : ${target.nom || 'Membre'}`,
-        description: `${userData?.nom || 'Le président'} propose de passer ${target.nom || 'ce membre'} de ${roleLabel(target.role)} à ${roleLabel(nextRole)}.`,
+      const result = await proposeRoleChangeVoteFn({
         targetUserId: target.uid,
-        targetUserName: target.nom || 'Membre',
-        oldRole: target.role || 'membre',
         newRole: nextRole,
-        createdBy: userData?.uid || null,
-        createdByName: userData?.nom || 'Président',
-        createdByRole: 'president',
-        statut: 'ouvert',
-        votesOui: 0,
-        votesNon: 0,
-        totalMembres: totalActifs,
-        quorumRequis: 0,
-        majoriteRequise,
-        dateCreation: now,
-        dateExpiration: expiration,
-        applique: false,
-        montant: 0,
-        categorie: 'gouvernance',
-        fournisseur: 'CoopLedger',
-        hash: `role-change-${target.uid}-${Date.now()}`,
-        priorite: 'routine',
-        initiateur: userData?.nom || 'Président',
-        roleInitiateur: 'Président',
-        txId: `RC-${Date.now()}`,
-        createdAt: serverTimestamp(),
       });
+      const voteId = result?.data?.voteId;
 
       if (notifyPerm === 'granted' && typeof sendNotification === 'function') {
         sendNotification({
           title: '🗳️ Vote requis : changement de rôle',
           body: `${target.nom || 'Un membre'} : ${roleLabel(target.role)} → ${roleLabel(nextRole)}. Votre vote est requis.`,
-          tag: `vote-role-change-${voteRef.id}`,
-          data: { url: '/vote', voteId: voteRef.id },
+          tag: `vote-role-change-${voteId || Date.now()}`,
+          data: { url: '/vote', voteId: voteId || null },
         });
       }
 
@@ -447,11 +464,27 @@ export default function Membres({ userData, notifications }) {
       );
       setRoleModal(null);
       setPresidencyConfirm(false);
-    } catch {
-      showToast(
-        'Erreur lors de la création du vote de changement de rôle',
-        'error'
-      );
+    } catch (err) {
+      const msg = err?.message || '';
+      if (
+        msg.includes('permission') ||
+        err?.code === 'functions/permission-denied'
+      ) {
+        showToast(
+          'Action non autorisée. Seul le président peut proposer ce changement de rôle.',
+          'error'
+        );
+      } else if (err?.code === 'functions/already-exists') {
+        showToast(
+          'Un vote identique est déjà en cours pour ce membre.',
+          'error'
+        );
+      } else {
+        showToast(
+          msg || 'Erreur lors de la création du vote de changement de rôle',
+          'error'
+        );
+      }
     }
   };
 

@@ -155,6 +155,19 @@ export function useNotifications(userData) {
             voteData.createurUid ?? voteData.createurId ?? voteData.creeParUid;
           if (createur && createur === userData.uid) return;
 
+          if (voteData.typeVote === 'role_change') {
+            const ancien = voteData.oldRole || 'membre';
+            const nouveau = voteData.newRole || 'membre';
+            const cible = voteData.targetUserName || 'un membre';
+            sendNotification({
+              title: '🗳️ Vote requis : changement de rôle',
+              body: `${cible} : ${ancien} → ${nouveau}. Votre vote est requis.`,
+              tag: `vote-role-change-${change.doc.id}`,
+              data: { url: '/vote', voteId: change.doc.id },
+            });
+            return;
+          }
+
           sendNotification(
             '🗳️ Nouveau vote requis',
             `${voteData.titre} - ${voteData.montant?.toLocaleString('fr-FR')} FCFA`,

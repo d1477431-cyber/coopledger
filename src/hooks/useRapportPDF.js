@@ -1,19 +1,12 @@
 import { useCallback } from 'react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { calculerFinances, toDate, estEntree } from '../utils/calculsFinanciers';
 
 /** Couleurs marque CoopLedger (#15803d, #14532d) */
 const COLOR_PRIMARY = [21, 128, 61];
 const COLOR_DARK = [20, 83, 45];
 const COLOR_PRIMARY_AMOUNT = COLOR_PRIMARY;
-
-// Convertir Firebase Timestamp en Date
-function toDate(value) {
-  if (!value) return null;
-  if (typeof value?.toDate === 'function') return value.toDate();
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
 
 // Formater une date en français
 function formatDate(value) {
@@ -47,21 +40,19 @@ function formatMoisForFileName(date) {
 export function resumePourMois(transactions, year, month) {
   const startOfMonth = new Date(year, month, 1);
   const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59, 999);
+  const start = new Date(year, month, 1);
+  const end = new Date(year, month + 1, 1, 0, 0, 0, 0);
 
   const txMois = (transactions || []).filter((tx) => {
     const date = toDate(tx.date);
     return date && date >= startOfMonth && date <= endOfMonth;
   });
 
-  const totalEntrees = txMois
-    .filter((tx) => tx.type === 'entree' || tx.type === 'revenu')
-    .reduce((sum, tx) => sum + (tx.montant || 0), 0);
-
-  const totalSorties = txMois
-    .filter((tx) => tx.type === 'sortie' || tx.type === 'depense')
-    .reduce((sum, tx) => sum + (tx.montant || 0), 0);
-
-  const soldeNet = totalEntrees - totalSorties;
+  const {
+    revenus: totalEntrees,
+    depenses: totalSorties,
+    solde: soldeNet,
+  } = calculerFinances(transactions, { start, end });
   const nbValidees = txMois.filter((tx) => tx.statut === 'valide').length;
   const nbEnCours = txMois.filter((tx) => tx.statut === 'en_cours').length;
   const nbRejetees = txMois.filter((tx) => tx.statut === 'rejete').length;
@@ -163,7 +154,7 @@ export function useRapportPDF() {
     const txTableBody = txMois.map((tx) => [
       formatDate(tx.date),
       tx.titre || '-',
-      tx.type === 'entree' || tx.type === 'revenu' ? '↑ Entrée' : '↓ Sortie',
+      estEntree(tx) ? '↑ Entrée' : '↓ Sortie',
       (tx.statut || '-').charAt(0).toUpperCase() + (tx.statut || '-').slice(1),
       formatMontant(tx.montant),
       (tx.hash || '-').substring(0, 12) + '...',

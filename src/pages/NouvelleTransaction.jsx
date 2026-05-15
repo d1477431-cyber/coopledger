@@ -71,11 +71,83 @@ export default function NouvelleTransaction({ userData }) {
     setEtape(2);
   }
 
+  function buildTxData(overrides = {}) {
+    return {
+      titre: form.titre,
+      montant: montantNum,
+      type: form.type === 'depense' ? 'sortie' : 'entree',
+      typeTransaction: form.type,
+      categorie: form.categorie,
+      fournisseur: form.fournisseur,
+      quantite: form.quantite,
+      description: form.description,
+      justification: form.justification,
+      statut: necessiteVote ? 'en_cours' : 'valide',
+      cooperativeId: userData?.cooperativeId || 'broukou',
+      creePar: userData?.uid || 'demo',
+      createurNom: userData?.nom || userData?.email || 'Trésorier',
+      initiateur: userData?.nom || userData?.email || 'Trésorier',
+      date: new Date(),
+      hash: null,
+      txId: txId,
+      source: 'web',
+      blockchain: null,
+      ...overrides,
+    };
+  }
+
+  async function creerVoteEtNotifier(txRefId, hashPourVote, typeRegistre) {
+    await setDoc(doc(db, 'votes', txRefId), {
+      titre: form.titre,
+      description: form.description || `Validation de la dépense : ${form.titre}`,
+      montant: montantNum,
+      categorie: form.categorie,
+      quantite: form.quantite,
+      fournisseur: form.fournisseur,
+      typeRegistre,
+      initiateur: userData?.nom || 'Trésorier',
+      roleInitiateur: userData?.role || 'Trésorier',
+      createurUid: userData?.uid || null,
+      cooperativeId: userData?.cooperativeId || 'broukou',
+      statut: 'ouvert',
+      dateCreation: new Date(),
+      dateExpiration: new Date(Date.now() + 30 * 60000),
+      votesOui: 0,
+      votesNon: 0,
+      quorumRequis: 60,
+      totalMembres: 45,
+      hash: hashPourVote,
+      txId: txId,
+      priorite: montantNum >= 1000000 ? 'urgent' : 'routine',
+      transactionId: txRefId,
+    });
+
+    try {
+      await notifications.sendNotification({
+        title: 'Nouveau vote requis',
+        body: `${form.titre} - ${montantNum.toLocaleString('fr-FR')} FCFA`,
+        icon: '/icon-192x192.png',
+        badge: '/icon-192x192.png',
+        tag: `vote-${txRefId}`,
+        data: { url: '/vote', voteId: txRefId },
+      });
+    } catch (n) {
+      console.warn('Notification:', n);
+    }
+  }
+
+  async function enregistrerTransactionFirestore(txData, typeRegistreVote) {
+    const txRef = await addDoc(collection(db, 'transactions'), txData);
+    if (necessiteVote) {
+      await creerVoteEtNotifier(txRef.id, txData.hash || txHash, typeRegistreVote);
+    }
+    return txRef;
+  }
+
   async function soumettre() {
     setLoading(true);
     setErreur('');
     setChainResult(null);
-    let usedPolygon = false;
 
     try {
       if (isContractConfigured()) {
@@ -87,27 +159,16 @@ export default function NouvelleTransaction({ userData }) {
             form.type,
             form.categorie
           );
-          usedPolygon = true;
           setChainResult(result);
-          if (necessiteVote) {
-            try {
-              await notifications.sendNotification({
-                title: 'Nouveau vote requis',
-                body: `${form.titre} - ${montantNum.toLocaleString('fr-FR')} FCFA`,
-                icon: '/icon-192x192.png',
-                badge: '/icon-192x192.png',
-                tag: `vote-chain-${result.transactionId || result.hash}`,
-                data: {
-                  url: '/vote',
-                  voteId: result.transactionId
-                    ? `chain-${result.transactionId}`
-                    : 'vote',
-                },
-              });
-            } catch (n) {
-              console.warn('Notification:', n);
-            }
-          }
+
+          const txData = buildTxData({
+            hash: result.hash || null,
+            blockchain: result.explorerUrl
+              ? { hash: result.hash, explorerUrl: result.explorerUrl }
+              : null,
+          });
+          await enregistrerTransactionFirestore(txData, 'Polygon + Firebase');
+
           setEtape(3);
           return;
         } catch (bcErr) {
@@ -119,67 +180,14 @@ export default function NouvelleTransaction({ userData }) {
         }
       }
 
-      const fauxHash = usedPolygon ? null : txHash;
-      const txData = {
-        titre: form.titre,
-        montant: montantNum,
-        type: form.type,
-        categorie: form.categorie,
-        fournisseur: form.fournisseur,
-        quantite: form.quantite,
-        description: form.description,
-        justification: form.justification,
-        statut: necessiteVote ? 'en_cours' : 'valide',
-        creePar: userData?.uid || 'demo',
-        initiateur: userData?.nom || userData?.email || 'Trésorier',
-        date: new Date(),
-        hash: fauxHash,
-        txId: txId,
-        bloc: '#' + (Math.floor(Math.random() * 100000) + 400000),
-        source: 'firebase',
-        blockchain: null,
-      };
-
-      const txRef = await addDoc(collection(db, 'transactions'), txData);
-
-      if (necessiteVote) {
-        await setDoc(doc(db, 'votes', txRef.id), {
-          titre: form.titre,
-          description: form.description || `Validation de la dépense : ${form.titre}`,
-          montant: montantNum,
-          categorie: form.categorie,
-          quantite: form.quantite,
-          fournisseur: form.fournisseur,
-          typeRegistre: 'Firebase (secours)',
-          initiateur: userData?.nom || 'Trésorier',
-          roleInitiateur: userData?.role || 'Trésorier',
-          createurUid: userData?.uid || null,
-          cooperativeId: userData?.cooperativeId || 'broukou',
-          statut: 'ouvert',
-          dateCreation: new Date(),
-          dateExpiration: new Date(Date.now() + 30 * 60000),
-          votesOui: 0,
-          votesNon: 0,
-          quorumRequis: 60,
-          totalMembres: 45,
-          hash: txHash,
-          txId: txId,
-          priorite: montantNum >= 1000000 ? 'urgent' : 'routine',
-          transactionId: txRef.id,
-        });
-
-        await notifications.sendNotification({
-          title: 'Nouveau vote requis',
-          body: `${form.titre} - ${montantNum.toLocaleString('fr-FR')} FCFA`,
-          icon: '/icon-192x192.png',
-          badge: '/icon-192x192.png',
-          tag: `vote-${txRef.id}`,
-          data: { url: '/vote', voteId: txRef.id },
-        });
-      }
+      const txData = buildTxData({
+        hash: txHash,
+      });
+      await enregistrerTransactionFirestore(txData, 'Firebase (secours)');
 
       setEtape(3);
     } catch (err) {
+      console.error(err);
       setEtape(3);
     }
     setLoading(false);

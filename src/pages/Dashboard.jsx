@@ -12,6 +12,7 @@ import {
 } from '../hooks/useBlockchain';
 import { getExplorerTxUrl, isContractConfigured, CONTRACT_ADDRESS } from '../config/blockchain';
 import { getAddress } from '../hooks/useWallet';
+import { calculerFinances, estEntree, estDepense } from '../utils/calculsFinanciers';
 
 function genHash() {
   return '0x' + Array.from({ length: 8 }, () =>
@@ -42,7 +43,7 @@ function StatCard({ icon, label, value, sub, color, bgColor }) {
 
 function TransactionRow({ tx }) {
   const onChainHash = tx.explorerTxHash || (tx.hash?.startsWith?.('0x') ? tx.hash : null);
-  const isEntree = tx.type === 'entree' || tx.type === 'revenu';
+  const isEntree = estEntree(tx);
   const statutColors = {
     valide: 'bg-green-100 text-green-700',
     en_cours: 'bg-yellow-100 text-yellow-700',
@@ -99,20 +100,9 @@ function calculerGraphique(transactions) {
     const date = new Date(maintenant.getFullYear(), maintenant.getMonth() - i, 1);
     const mois = date.getMonth();
     const annee = date.getFullYear();
-
-    const txDuMois = transactions.filter(tx => {
-      const txDate = tx.date?.toDate ? tx.date.toDate() : new Date(tx.date);
-      return txDate.getMonth() === mois && txDate.getFullYear() === annee && tx.statut === 'valide';
-    });
-
-    const revenus = txDuMois
-      .filter(tx => tx.type === 'revenu' || tx.type === 'entree')
-      .reduce((a, tx) => a + (tx.montant || 0), 0);
-
-    const depenses = txDuMois
-      .filter(tx => tx.type === 'depense' || tx.type === 'sortie')
-      .reduce((a, tx) => a + (tx.montant || 0), 0);
-
+    const start = new Date(annee, mois, 1);
+    const end = new Date(annee, mois + 1, 1);
+    const { revenus, depenses } = calculerFinances(transactions, { start, end });
     data.push({ mois: moisLabels[mois], revenus, depenses });
   }
   return data;
@@ -190,13 +180,7 @@ export default function Dashboard({ userData, notifications }) {
   }, [votesChain]);
 
   const soldeFirebase = useMemo(
-    () =>
-      toutesTransactions
-        .filter((t) => t.statut === 'valide')
-        .reduce((acc, tx) => {
-          const isEntree = tx.type === 'entree' || tx.type === 'revenu';
-          return isEntree ? acc + (tx.montant || 0) : acc - (tx.montant || 0);
-        }, 0),
+    () => calculerFinances(toutesTransactions).solde,
     [toutesTransactions]
   );
 
@@ -205,13 +189,7 @@ export default function Dashboard({ userData, notifications }) {
       ? soldeContrat
       : soldeFirebase;
 
-  const depensesMois = toutesTransactions
-    .filter((t) => t.statut === 'valide' && (t.type === 'sortie' || t.type === 'depense'))
-    .reduce((a, t) => a + (t.montant || 0), 0);
-
-  const revenusMois = toutesTransactions
-    .filter((t) => t.statut === 'valide' && (t.type === 'entree' || t.type === 'revenu'))
-    .reduce((a, t) => a + (t.montant || 0), 0);
+  const { revenus: revenusMois, depenses: depensesMois } = calculerFinances(toutesTransactions);
 
   // Graphique depuis vraies données
   const dataGraphique = calculerGraphique(toutesTransactions);
@@ -370,7 +348,7 @@ export default function Dashboard({ userData, notifications }) {
           value={depensesMois >= 1000000
             ? `${(depensesMois / 1000000).toFixed(2)}M`
             : `${(depensesMois / 1000).toFixed(0)}K`}
-          sub={`${toutesTransactions.filter(t => t.type === 'depense' || t.type === 'sortie').length} opérations`}
+          sub={`${toutesTransactions.filter(estDepense).length} opérations`}
           color="text-red-600"
           bgColor="bg-red-50"
         />
@@ -380,7 +358,7 @@ export default function Dashboard({ userData, notifications }) {
           value={revenusMois >= 1000000
             ? `${(revenusMois / 1000000).toFixed(2)}M`
             : `${(revenusMois / 1000).toFixed(0)}K`}
-          sub={`${toutesTransactions.filter(t => t.type === 'revenu' || t.type === 'entree').length} opérations`}
+          sub={`${toutesTransactions.filter(estEntree).length} opérations`}
           color="text-blue-600"
           bgColor="bg-blue-50"
         />
@@ -469,11 +447,11 @@ export default function Dashboard({ userData, notifications }) {
               {transactions.slice(0, 4).map(tx => (
                 <div key={tx.id} className="flex gap-3 py-3 border-b border-gray-50 last:border-0">
                   <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-base flex-shrink-0 ${
-                    tx.type === 'revenu' || tx.type === 'entree' ? 'bg-green-100' :
+                    estEntree(tx) ? 'bg-green-100' :
                     tx.statut === 'en_cours' ? 'bg-amber-100' : 'bg-red-100'
                   }`}>
                     {tx.statut === 'en_cours' ? '🗳️' :
-                     tx.type === 'revenu' || tx.type === 'entree' ? '📈' : '📉'}
+                     estEntree(tx) ? '📈' : '📉'}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-semibold text-gray-900 truncate">{tx.titre}</p>

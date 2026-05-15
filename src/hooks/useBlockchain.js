@@ -1,18 +1,29 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { getExplorerTxUrl, isContractConfigured } from '../config/blockchain';
+import { toDate, calculerFinances } from '../utils/calculsFinanciers';
 
-function toTransactionModel(docSnap) {
-  const data = docSnap.data();
-  const hash = data.hash || null;
+function mapTransactionDoc(docSnap) {
+  const raw = docSnap.data();
+  const date = toDate(raw.date) || toDate(raw.createdAt) || new Date(0);
+  const hash = raw.hash || null;
   const onChainHash = hash?.startsWith?.('0x') ? hash : null;
   return {
     id: docSnap.id,
-    ...data,
-    source: data.source || (onChainHash ? 'polygon' : 'firebase'),
+    ...raw,
+    date,
+    source: raw.source || (onChainHash ? 'polygon' : 'firebase'),
     explorerTxHash: onChainHash,
   };
+}
+
+function sortByDateDesc(items) {
+  return [...items].sort((a, b) => {
+    const da = toDate(a.date) || new Date(0);
+    const db = toDate(b.date) || new Date(0);
+    return db - da;
+  });
 }
 
 export function rememberVoteCast(transactionId, address, choix) {
@@ -31,11 +42,10 @@ export function useTransactions({ firebaseFallback = true } = {}) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const q = query(collection(db, 'transactions'), orderBy('date', 'desc'));
     const unsub = onSnapshot(
-      q,
+      collection(db, 'transactions'),
       (snap) => {
-        setTransactions(snap.docs.map(toTransactionModel));
+        setTransactions(sortByDateDesc(snap.docs.map(mapTransactionDoc)));
         setLoading(false);
       },
       () => {
@@ -62,11 +72,10 @@ export function useSolde() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const q = query(collection(db, 'transactions'), orderBy('date', 'desc'));
     const unsub = onSnapshot(
-      q,
+      collection(db, 'transactions'),
       (snap) => {
-        setTransactions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setTransactions(sortByDateDesc(snap.docs.map(mapTransactionDoc)));
         setLoading(false);
       },
       () => {
@@ -78,13 +87,7 @@ export function useSolde() {
   }, []);
 
   const solde = useMemo(
-    () =>
-      transactions
-        .filter((t) => t.statut === 'valide')
-        .reduce((acc, tx) => {
-          const isEntree = tx.type === 'entree' || tx.type === 'revenu';
-          return isEntree ? acc + (tx.montant || 0) : acc - (tx.montant || 0);
-        }, 0),
+    () => calculerFinances(transactions).solde,
     [transactions]
   );
 

@@ -9,12 +9,14 @@ export default function Navbar({ userData }) {
     president: 'bg-purple-100 text-purple-700',
     tresorier: 'bg-blue-100 text-blue-700',
     membre: 'bg-green-100 text-green-700',
+    institution: 'bg-amber-100 text-amber-700',
   };
 
   const roleLabels = {
     president: 'Président',
     tresorier: 'Trésorier',
     membre: 'Membre',
+    institution: 'Institution',
   };
 
   const links = [
@@ -22,8 +24,10 @@ export default function Navbar({ userData }) {
     { to: '/', label: 'Tableau de bord' },
     { to: '/vote', label: 'Votes' },
     { to: '/historique', label: 'Historique' },
+    { to: '/appels-fonds', label: '💰 Appels de fonds' },
     { to: '/rapport', label: '📊 Rapport' },
     { to: '/membres', label: '👥 Membres' },
+    { to: '/profil', label: '👤 Profil' },
     ...(userData?.role === 'tresorier' || userData?.role === 'president'
       ? [{ to: '/nouvelle-transaction', label: '➕ Nouvelle Transaction' }]
       : []),

@@ -3,50 +3,34 @@
 import { ethers } from 'ethers';
 
 export const POLYGON_CONFIG = {
-  // Réseau Polygon
-  RPC_URL: 'https://polygon-rpc.com/',
-  CHAIN_ID: 137,
-  CHAIN_NAME: 'Polygon Mainnet',
-  BLOCK_EXPLORER_URL: 'https://polygonscan.com/',
+  RPC_URL: 'https://rpc-amoy.polygon.technology',
+  CHAIN_ID: 80002,
+  CHAIN_NAME: 'Polygon Amoy Testnet',
+  BLOCK_EXPLORER_URL: 'https://amoy.polygonscan.com/',
   NATIVE_CURRENCY: {
     name: 'MATIC',
     symbol: 'MATIC',
     decimals: 18,
   },
 
-  // Contrats intelligents (à remplacer par les vraies adresses déployées)
   CONTRACTS: {
-    COOPERATIVE: '0x742d35Cc6634C0532925a3b844Bc454e4438f44e', // Contrat principal de la coopérative
-    GOVERNANCE: '0x0000000000000000000000000000000000000000', // Contrat de gouvernance (optionnel)
+    COOPERATIVE: '0x8B1625f1e4EE935951C6ff451c70E8DEd378877a',
+    GOVERNANCE: '0x0000000000000000000000000000000000000000',
   },
 
-  // Seuils de vote (en FCFA)
   VOTING_THRESHOLDS: {
-    MIN_AMOUNT: 500000, // 500,000 FCFA
-    URGENT_AMOUNT: 1000000, // 1,000,000 FCFA
+    MIN_AMOUNT: 500000,
+    URGENT_AMOUNT: 1000000,
   },
 
-  // Configuration des votes
   VOTING_CONFIG: {
-    DURATION_MINUTES: 30, // Durée d'un vote en minutes
-    QUORUM_PERCENTAGE: 60, // Pourcentage requis pour le quorum
-    TOTAL_MEMBERS: 45, // Nombre total de membres
+    DURATION_MINUTES: 30,
+    QUORUM_PERCENTAGE: 60,
+    TOTAL_MEMBERS: 45,
   },
 
-  // Configuration des notifications push
   NOTIFICATIONS: {
     VAPID_PUBLIC_KEY: process.env.REACT_APP_VAPID_PUBLIC_KEY || '',
-    VAPID_PRIVATE_KEY: process.env.REACT_APP_VAPID_PRIVATE_KEY || '',
-  },
-
-  // Configuration Firebase (pour référence)
-  FIREBASE: {
-    API_KEY: process.env.REACT_APP_FIREBASE_API_KEY,
-    AUTH_DOMAIN: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
-    PROJECT_ID: process.env.REACT_APP_FIREBASE_PROJECT_ID,
-    STORAGE_BUCKET: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
-    MESSAGING_SENDER_ID: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
-    APP_ID: process.env.REACT_APP_FIREBASE_APP_ID,
   },
 };
 

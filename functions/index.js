@@ -211,3 +211,132 @@ exports.createMember = onCall(
     }
   }
 );
+
+/**
+ * Callable : proposer un changement de rôle (création d'un vote role_change).
+ * Écriture côté admin pour contourner les limites de règles Firestore côté client.
+ */
+exports.proposeRoleChangeVote = onCall(
+  {
+    region: 'europe-west1',
+  },
+  async (request) => {
+    if (!request.auth?.uid) {
+      throw new HttpsError('unauthenticated', 'Authentification requise');
+    }
+
+    const { targetUserId, newRole } = request.data || {};
+    const targetUid =
+      typeof targetUserId === 'string' ? targetUserId.trim() : '';
+    const nextRole = typeof newRole === 'string' ? newRole.trim() : '';
+
+    if (!targetUid || !VALID_ROLES.has(nextRole)) {
+      throw new HttpsError(
+        'invalid-argument',
+        'Données invalides pour la proposition de changement de rôle'
+      );
+    }
+
+    const db = admin.firestore();
+    const callerRef = db.collection('users').doc(request.auth.uid);
+    const callerSnap = await callerRef.get();
+    if (!callerSnap.exists) {
+      throw new HttpsError('permission-denied', 'Profil initiateur introuvable');
+    }
+
+    const caller = callerSnap.data();
+    if (caller.role !== 'president') {
+      throw new HttpsError('permission-denied', 'Action réservée au président');
+    }
+    const cooperativeId = caller.cooperativeId || 'broukou';
+
+    const targetRef = db.collection('users').doc(targetUid);
+    const targetSnap = await targetRef.get();
+    if (!targetSnap.exists) {
+      throw new HttpsError('not-found', 'Membre cible introuvable');
+    }
+    const target = targetSnap.data();
+
+    if ((target.cooperativeId || 'broukou') !== cooperativeId) {
+      throw new HttpsError(
+        'permission-denied',
+        'Membre hors coopérative autorisée'
+      );
+    }
+
+    const oldRole = target.role || 'membre';
+    if (oldRole === 'president' && nextRole !== 'president') {
+      throw new HttpsError(
+        'failed-precondition',
+        'Le président ne peut pas être rétrogradé via ce formulaire'
+      );
+    }
+    if (oldRole === nextRole) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Ce membre possède déjà ce rôle'
+      );
+    }
+
+    const duplicateSnap = await db
+      .collection('votes')
+      .where('typeVote', '==', 'role_change')
+      .where('statut', '==', 'ouvert')
+      .where('targetUserId', '==', targetUid)
+      .where('newRole', '==', nextRole)
+      .limit(1)
+      .get();
+    if (!duplicateSnap.empty) {
+      throw new HttpsError(
+        'already-exists',
+        'Un vote identique est déjà en cours'
+      );
+    }
+
+    const membresActifsSnap = await db
+      .collection('users')
+      .where('cooperativeId', '==', cooperativeId)
+      .where('statut', '==', 'actif')
+      .get();
+    const totalActifs = membresActifsSnap.size || 0;
+    const majoriteRequise = Math.floor(totalActifs / 2) + 1;
+
+    const now = new Date();
+    const expiration = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+    const voteRef = await db.collection('votes').add({
+      typeVote: 'role_change',
+      titre: `Changement de rôle : ${target.nom || 'Membre'}`,
+      description: `${caller.nom || 'Le président'} propose de passer ${target.nom || 'ce membre'} de ${oldRole} à ${nextRole}.`,
+      targetUserId: targetUid,
+      targetUserName: target.nom || 'Membre',
+      oldRole,
+      newRole: nextRole,
+      cooperativeId,
+      createurUid: request.auth.uid,
+      createdBy: request.auth.uid,
+      createdByName: caller.nom || 'Président',
+      createdByRole: 'president',
+      initiateur: caller.nom || 'Président',
+      roleInitiateur: 'Président',
+      statut: 'ouvert',
+      votesOui: 0,
+      votesNon: 0,
+      totalMembres: totalActifs,
+      quorumRequis: 0,
+      majoriteRequise,
+      dateCreation: now,
+      dateExpiration: expiration,
+      applique: false,
+      montant: 0,
+      categorie: 'gouvernance',
+      fournisseur: 'CoopLedger',
+      hash: `role-change-${targetUid}-${Date.now()}`,
+      priorite: 'routine',
+      txId: `RC-${Date.now()}`,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return { voteId: voteRef.id };
+  }
+);

@@ -4,11 +4,11 @@ import { POLYGON_CONFIG } from './polygon';
 export const CONTRACT_ADDRESS = POLYGON_CONFIG?.CONTRACTS?.COOPERATIVE || '';
 
 export const NETWORK_CONFIG = {
-  name: 'Polygon Mainnet',
-  chainId: POLYGON_CONFIG?.CHAIN_ID || 137,
-  rpcUrl: POLYGON_CONFIG?.RPC_URL || 'https://polygon-rpc.com/',
-  explorer: POLYGON_CONFIG?.BLOCK_EXPLORER_URL || 'https://polygonscan.com/',
-  symbol: 'POL',
+  name: 'Polygon Amoy Testnet',
+  chainId: 80002,
+  rpcUrl: 'https://rpc-amoy.polygon.technology',
+  explorer: 'https://amoy.polygonscan.com/',
+  symbol: 'MATIC',
 };
 
 export function isContractConfigured() {

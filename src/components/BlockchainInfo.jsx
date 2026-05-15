@@ -32,7 +32,7 @@ export default function BlockchainInfo({ transaction }) {
 
   const polygonscanUrl =
     getExplorerTxUrl(transaction.hash) ||
-    `https://polygonscan.com/tx/${transaction.hash}`;
+    `https://amoy.polygonscan.com/tx/${transaction.hash}`;
 
   return (
     <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-xl p-4 mt-4">
@@ -45,7 +45,7 @@ export default function BlockchainInfo({ transaction }) {
             Transaction Blockchain
           </h3>
           <p className="text-xs text-purple-600">
-            Enregistrée sur Polygon Network
+            Enregistrée sur Polygon Amoy Testnet
           </p>
         </div>
       </div>

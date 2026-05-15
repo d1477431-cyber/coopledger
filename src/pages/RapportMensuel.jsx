@@ -3,6 +3,7 @@ import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import { db } from '../firebase';
 import { useRapportPDF, resumePourMois } from '../hooks/useRapportPDF';
+import { estEntree } from '../utils/calculsFinanciers';
 
 const MOIS_OPTIONS = [
   { value: 0, label: 'Janvier' },
@@ -181,7 +182,7 @@ export default function RapportMensuel({ userData }) {
             <p className="p-8 text-center text-gray-400 text-sm">Aucune transaction pour cette période.</p>
           ) : (
             resume.txMois.map((tx) => {
-              const isEntree = tx.type === 'entree' || tx.type === 'revenu';
+              const isEntreeTx = estEntree(tx);
               return (
                 <div
                   key={tx.id}
@@ -192,9 +193,9 @@ export default function RapportMensuel({ userData }) {
                     <p className="text-xs text-gray-400">{formatDate(tx.date)} · {tx.statut || '—'}</p>
                   </div>
                   <p
-                    className={`text-sm font-bold whitespace-nowrap ${isEntree ? 'text-[#15803d]' : 'text-red-600'}`}
+                    className={`text-sm font-bold whitespace-nowrap ${isEntreeTx ? 'text-[#15803d]' : 'text-red-600'}`}
                   >
-                    {isEntree ? '+' : '-'}
+                    {isEntreeTx ? '+' : '-'}
                     {(tx.montant || 0).toLocaleString('fr-FR')} FCFA
                   </p>
                 </div>
